@@ -1,0 +1,147 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+    provider = "prisma-client-js"
+}
+
+datasource db {
+    provider = "mongodb"
+    url      = env("DATABASE_URL")
+}
+
+enum Role {
+    ADMIN
+    USER
+}
+
+enum UserStatus {
+    NORMAL
+    BANNED
+}
+
+enum ProductStatus {
+    PUBLISHED
+    PRIVATE
+    WHITELIST
+}
+
+model User {
+    id        String     @id @default(auto()) @map("_id") @db.ObjectId
+    username  String     @unique
+    password  String
+    role      Role       @default(USER)
+    status    UserStatus @default(NORMAL)
+    createdAt DateTime   @default(now())
+    updatedAt DateTime   @updatedAt
+    products  Product[]
+    reviews   Review[]
+
+    @@index([role])
+    @@index([status])
+}
+
+model Product {
+    id               String        @id @default(auto()) @map("_id") @db.ObjectId
+    name             String
+    imageKey         String
+    status           ProductStatus @default(PRIVATE)
+    whitelistUserIds String[]      @db.ObjectId
+    isDeleted        Boolean       @default(false)
+    deletedAt        DateTime?
+    updatedBy        String        @db.ObjectId
+    createdAt        DateTime      @default(now())
+    updatedAt        DateTime      @updatedAt
+
+    user      User              @relation(fields: [updatedBy], references: [id])
+    reviews   Review[]
+    reactions ProductReaction[]
+    savedBy   SavedProduct[]
+    views     ProductView[]
+
+    @@index([whitelistUserIds])
+    @@index([updatedBy])
+    @@index([isDeleted])
+    @@index([status])
+    @@index([name])
+}
+
+model Review {
+    id        String   @id @default(auto()) @map("_id") @db.ObjectId
+    content   String
+    userId    String   @db.ObjectId
+    productId String   @db.ObjectId
+    parentId  String?  @db.ObjectId
+    isHidden  Boolean  @default(false)
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    user    User         @relation(fields: [userId], references: [id])
+    product Product      @relation(fields: [productId], references: [id])
+    parent  Review?      @relation("ReviewReplies", fields: [parentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+    replies Review[]     @relation("ReviewReplies")
+    likes   ReviewLike[]
+
+    @@index([productId])
+    @@index([userId])
+    @@index([parentId])
+    @@index([isHidden])
+}
+
+model ReviewLike {
+    id        String   @id @default(auto()) @map("_id") @db.ObjectId
+    reviewId  String   @db.ObjectId
+    userId    String   @db.ObjectId
+    isLike    Boolean // true = like, false = dislike
+    createdAt DateTime @default(now())
+
+    review Review @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+
+    @@unique([reviewId, userId])
+    @@index([reviewId])
+    @@index([userId])
+}
+
+model ProductReaction {
+    id        String   @id @default(auto()) @map("_id") @db.ObjectId
+    productId String   @db.ObjectId
+    userId    String   @db.ObjectId
+    createdAt DateTime @default(now())
+
+    product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+    @@unique([productId, userId])
+    @@index([productId])
+    @@index([userId])
+}
+
+model SavedProduct {
+    id        String   @id @default(auto()) @map("_id") @db.ObjectId
+    productId String   @db.ObjectId
+    userId    String   @db.ObjectId
+    createdAt DateTime @default(now())
+
+    product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+    @@unique([productId, userId])
+    @@index([productId])
+    @@index([userId])
+}
+
+model ProductView {
+    id        String   @id @default(auto()) @map("_id") @db.ObjectId
+    productId String   @db.ObjectId
+    sessionId String // Browser session ID
+    userId    String?  @db.ObjectId // Optional: logged in user
+    createdAt DateTime @default(now())
+
+    product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+    @@unique([productId, sessionId])
+    @@index([productId])
+    @@index([sessionId])
+    @@index([createdAt])
+}
