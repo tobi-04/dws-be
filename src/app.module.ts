@@ -11,6 +11,8 @@ import { UserModule } from './packages/user/user.module';
 import { ReviewModule } from './packages/review/review.module';
 import { EventsModule } from './packages/events/events.module';
 import { StatisticsModule } from './packages/statistics/statistics.module';
+import { NotificationModule } from './packages/notification/notification.module';
+import { DevToolsModule } from './packages/devtools/devtools.module';
 
 @Module({
   imports: [
@@ -23,6 +25,8 @@ import { StatisticsModule } from './packages/statistics/statistics.module';
     ReviewModule,
     EventsModule,
     StatisticsModule,
+    NotificationModule,
+    DevToolsModule,
   ],
   controllers: [AppController],
   providers: [AppService, PrismaService],

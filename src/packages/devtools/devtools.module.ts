@@ -1,20 +1,20 @@
 import { Module, forwardRef } from '@nestjs/common';
-import { ReviewController } from './review.controller';
-import { ReviewService } from './review.service';
+import { DevToolsController } from './devtools.controller';
+import { DevToolsService } from './devtools.service';
 import { PrismaModule } from '../../prisma/prisma.module';
 import { CacheModule } from '../cache/cache.module';
-import { EventsModule } from '../events/events.module';
 import { NotificationModule } from '../notification/notification.module';
+import { EventsModule } from '../events/events.module';
 
 @Module({
   imports: [
     PrismaModule,
     CacheModule,
-    forwardRef(() => EventsModule),
     forwardRef(() => NotificationModule),
+    forwardRef(() => EventsModule),
   ],
-  controllers: [ReviewController],
-  providers: [ReviewService],
-  exports: [ReviewService],
+  controllers: [DevToolsController],
+  providers: [DevToolsService],
+  exports: [DevToolsService],
 })
-export class ReviewModule {}
+export class DevToolsModule {}

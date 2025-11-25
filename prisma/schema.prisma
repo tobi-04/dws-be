@@ -145,3 +145,43 @@ model ProductView {
     @@index([sessionId])
     @@index([createdAt])
 }
+
+// Notification Types
+enum NotificationType {
+    SYSTEM // System notifications
+    WARNING // DevTools warning
+    ACCOUNT_LOCKED // Account locked notification
+    REVIEW_LIKE // Someone liked your review
+    REVIEW_REPLY // Someone replied to your review
+    PRODUCT_LIKE // Someone liked a product (admin)
+    PRODUCT_COMMENT // Someone commented on a product (admin)
+    PRODUCT_SAVE // Someone saved a product (admin)
+    ADMIN_MESSAGE // Custom message from admin
+}
+
+model Notification {
+    id        String           @id @default(auto()) @map("_id") @db.ObjectId
+    userId    String           @db.ObjectId // Recipient user
+    type      NotificationType
+    title     String
+    content   String // HTML content supported
+    isRead    Boolean          @default(false)
+    metadata  Json? // Additional data (productId, reviewId, etc.)
+    createdAt DateTime         @default(now())
+
+    @@index([userId])
+    @@index([isRead])
+    @@index([createdAt])
+    @@index([type])
+}
+
+model DevToolsLog {
+    id        String   @id @default(auto()) @map("_id") @db.ObjectId
+    userId    String   @db.ObjectId
+    path      String // Page path when detected
+    userAgent String?
+    createdAt DateTime @default(now())
+
+    @@index([userId])
+    @@index([createdAt])
+}

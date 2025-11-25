@@ -37,15 +37,27 @@ export class UserController {
   })
   @ApiQuery({ name: 'page', required: false, type: Number, example: 1 })
   @ApiQuery({ name: 'limit', required: false, type: Number, example: 30 })
+  @ApiQuery({
+    name: 'status',
+    required: false,
+    type: String,
+    enum: ['NORMAL', 'BANNED'],
+  })
   @ApiResponse({
     status: 200,
     description: 'Users list retrieved',
     type: Promise<PaginatedUsersDto>,
   })
   async findAll(
-    @Query() query: GetUsersQueryDto & { search?: string },
+    @Query()
+    query: GetUsersQueryDto & { search?: string; status?: 'NORMAL' | 'BANNED' },
   ): Promise<PaginatedUsersDto> {
-    return this.userService.findAll(query.page, query.limit, query.search);
+    return this.userService.findAll(
+      query.page,
+      query.limit,
+      query.search,
+      query.status,
+    );
   }
 
   @Patch(':id/lock')

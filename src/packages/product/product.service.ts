@@ -11,7 +11,8 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { R2Service } from '../r2/r2.service';
 import { CacheService } from '../cache/cache.service';
 import { EventsGateway } from '../events/events.gateway';
-import { ProductStatus, Product } from '@prisma/client';
+import { NotificationService } from '../notification/notification.service';
+import { ProductStatus, Product, NotificationType } from '@prisma/client';
 import {
   CreateProductDto,
   UpdateProductDto,
@@ -50,6 +51,8 @@ export class ProductService {
     private cache: CacheService,
     @Inject(forwardRef(() => EventsGateway))
     private eventsGateway: EventsGateway,
+    @Inject(forwardRef(() => NotificationService))
+    private notificationService: NotificationService,
   ) {}
 
   async create(
@@ -857,10 +860,31 @@ export class ProductService {
 
     if (existing) {
       await this.prisma.productReaction.delete({ where: { id: existing.id } });
+
+      // Delete notification when user unlikes the product
+      await this.notificationService.deleteByMetadata(
+        NotificationType.PRODUCT_LIKE,
+        { productId },
+      );
     } else {
       await this.prisma.productReaction.create({
         data: { productId, userId },
       });
+
+      // Notify admins about product like
+      const currentUser = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { username: true },
+      });
+      if (currentUser) {
+        const adminIds = await this.notificationService.getAdminIds();
+        await this.notificationService.notifyAdminProductLike(
+          adminIds,
+          currentUser.username,
+          product.name,
+          productId,
+        );
+      }
     }
 
     const count = await this.prisma.productReaction.count({
@@ -930,6 +954,12 @@ export class ProductService {
     if (existing) {
       await this.prisma.savedProduct.delete({ where: { id: existing.id } });
 
+      // Delete notification when user unsaves the product
+      await this.notificationService.deleteByMetadata(
+        NotificationType.PRODUCT_SAVE,
+        { productId },
+      );
+
       // Emit WebSocket event
       this.eventsGateway.emitProductSavedUpdated(productId, {
         userId,
@@ -947,6 +977,21 @@ export class ProductService {
         userId,
         saved: true,
       });
+
+      // Notify admins about product save
+      const currentUser = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { username: true },
+      });
+      if (currentUser) {
+        const adminIds = await this.notificationService.getAdminIds();
+        await this.notificationService.notifyAdminProductSave(
+          adminIds,
+          currentUser.username,
+          product.name,
+          productId,
+        );
+      }
 
       return { saved: true };
     }

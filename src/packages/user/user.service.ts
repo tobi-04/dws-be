@@ -1,6 +1,12 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  Inject,
+  forwardRef,
+} from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CacheService } from '../cache/cache.service';
+import { EventsGateway } from '../events/events.gateway';
 import type { User, UserStatus } from '@prisma/client';
 import type { UserResponseDto, PaginatedUsersDto } from './dto';
 
@@ -12,14 +18,17 @@ export class UserService {
   constructor(
     private prisma: PrismaService,
     private cache: CacheService,
+    @Inject(forwardRef(() => EventsGateway))
+    private eventsGateway: EventsGateway,
   ) {}
 
   async findAll(
     page: number = 1,
     limit: number = 30,
     search?: string,
+    status?: UserStatus,
   ): Promise<PaginatedUsersDto> {
-    const cacheKey = `${CACHE_KEY_PREFIX}:page:${page}:limit:${limit}:search:${search || ''}`;
+    const cacheKey = `${CACHE_KEY_PREFIX}:page:${page}:limit:${limit}:search:${search || ''}:status:${status || ''}`;
     const cached = await this.cache.get<PaginatedUsersDto>(cacheKey);
 
     if (cached) {
@@ -32,6 +41,10 @@ export class UserService {
 
     if (search) {
       where.username = { contains: search };
+    }
+
+    if (status) {
+      where.status = status;
     }
 
     if (page === 0) {
@@ -87,6 +100,9 @@ export class UserService {
       where: { id },
       data: { status: 'BANNED' },
     });
+
+    // Emit account banned event via WebSocket
+    this.eventsGateway.emitAccountBanned(id);
 
     await this.invalidateCache();
     return this.toResponseDto(updated);
