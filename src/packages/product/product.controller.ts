@@ -12,6 +12,8 @@ import {
   UploadedFile,
   ParseIntPipe,
   DefaultValuePipe,
+  Res,
+  Header,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -23,6 +25,7 @@ import {
   ApiQuery,
 } from '@nestjs/swagger';
 import { FileInterceptor } from '@nestjs/platform-express';
+import type { Response } from 'express';
 import { ProductService } from './product.service';
 import {
   CreateProductDto,
@@ -39,7 +42,6 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { User } from '../../common/decorators/user.decorator';
 import type { JwtUser } from '../../common/interfaces/jwt-user.interface';
-import * as XLSX from 'xlsx';
 
 @ApiTags('products')
 @Controller('products')
@@ -143,21 +145,31 @@ export class ProductController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'List products with pagination' })
+  @ApiOperation({
+    summary: 'List products with pagination (includes watermarked base64)',
+  })
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'limit', required: false, type: Number })
   @ApiResponse({
     status: 200,
-    description: 'Products list',
+    description: 'Products list with watermarked images',
     type: PaginatedProductsDto,
   })
   async findAll(
+    @User() user: JwtUser,
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
     @Query('limit', new DefaultValuePipe(10), ParseIntPipe) limit: number,
     @Query('search') search?: string,
     @Query('status') status?: string,
   ): Promise<PaginatedProductsDto> {
-    return this.productService.findAll(page, limit, search, status as any);
+    return this.productService.findAll(
+      page,
+      limit,
+      search,
+      status as any,
+      user.id,
+      user.username,
+    );
   }
 
   @Get('trash')
@@ -179,18 +191,44 @@ export class ProductController {
     return this.productService.findDeleted(page, limit, search, status as any);
   }
 
-  @Get(':id')
-  @ApiOperation({ summary: 'Get product detail with access control' })
+  @Get(':id/image')
+  @ApiOperation({
+    summary: 'Stream product image with username watermark',
+  })
   @ApiResponse({
     status: 200,
-    description: 'Product details',
+    description: 'Watermarked image stream',
+  })
+  @Header('Cache-Control', 'private, max-age=300')
+  async streamWatermarkedImage(
+    @Param('id') id: string,
+    @User() user: JwtUser,
+    @Res() res: Response,
+  ): Promise<void> {
+    const { buffer, mimeType } =
+      await this.productService.getWatermarkedImageBuffer(
+        id,
+        user.id,
+        user.username,
+      );
+
+    res.set('Content-Type', mimeType);
+    res.set('Content-Length', buffer.length.toString());
+    res.send(buffer);
+  }
+
+  @Get(':id')
+  @ApiOperation({ summary: 'Get product detail with watermarked image URL' })
+  @ApiResponse({
+    status: 200,
+    description: 'Product details with watermarked image URL',
     type: ProductResponseDto,
   })
   async findOne(
     @Param('id') id: string,
     @User() user: JwtUser,
   ): Promise<ProductResponseDto> {
-    return this.productService.findOne(id, user.id);
+    return this.productService.findOne(id, user.id, user.username);
   }
 
   @Delete(':id/soft')
@@ -237,6 +275,15 @@ export class ProductController {
   ): Promise<{ message: string }> {
     await this.productService.bulkHardDelete(dto.productIds);
     return { message: 'Products hard deleted successfully' };
+  }
+
+  @Delete('hard-delete-all')
+  @Roles('ADMIN')
+  @ApiOperation({ summary: 'Hard delete all products (ADMIN only)' })
+  @ApiResponse({ status: 200, description: 'All products hard deleted' })
+  async hardDeleteAll(): Promise<{ message: string; count: number }> {
+    const count = await this.productService.hardDeleteAll();
+    return { message: 'All products hard deleted successfully', count };
   }
 
   @Post('restore')
@@ -346,21 +393,6 @@ export class ProductController {
     @User() user: JwtUser,
   ): Promise<{ saved: boolean }> {
     return this.productService.toggleSaved(id, user.id);
-  }
-
-  // ========== Refresh Image URL ==========
-
-  @Get(':id/refresh-image')
-  @ApiOperation({ summary: 'Refresh signed image URL for product' })
-  @ApiResponse({
-    status: 200,
-    description: 'New signed URL',
-  })
-  async refreshImageUrl(
-    @Param('id') id: string,
-    @User() user: JwtUser,
-  ): Promise<{ url: string }> {
-    return this.productService.refreshImageUrl(id, user.id);
   }
 
   @Get('user/saved')

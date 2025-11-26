@@ -18,7 +18,6 @@ import {
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 const CACHE_KEY_PREFIX = 'devtools';
 const WARNING_THRESHOLD = 10;
-const LOCK_THRESHOLD = 15;
 
 @Injectable()
 export class DevToolsService {
@@ -66,42 +65,13 @@ export class DevToolsService {
       },
     });
 
-    // Check thresholds
-    if (todayCount >= LOCK_THRESHOLD) {
-      await this.lockUser(userId, user.username);
-    } else if (todayCount >= WARNING_THRESHOLD && todayCount < LOCK_THRESHOLD) {
-      // Only send warning at exactly 10, 11, 12, 13, 14
-      if (todayCount === WARNING_THRESHOLD) {
-        await this.sendWarning(userId, user.username, todayCount);
-      }
+    // Check warning threshold - only send warning at exactly 10
+    if (todayCount === WARNING_THRESHOLD) {
+      await this.sendWarning(userId, user.username, todayCount);
     }
 
     // Invalidate cache
     await this.invalidateCache(userId);
-  }
-
-  private async lockUser(userId: string, username: string): Promise<void> {
-    // Lock the user
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: { status: 'BANNED' },
-    });
-
-    // Emit account banned event via WebSocket
-    this.eventsGateway.emitAccountBanned(userId);
-
-    // Notify user
-    await this.notificationService.sendAccountLocked(userId);
-
-    // Notify all admins
-    const adminIds = await this.notificationService.getAdminIds();
-    await this.notificationService.notifyAdminUserLocked(
-      adminIds,
-      username,
-      userId,
-    );
-
-    this.logger.warn(`User ${username} (${userId}) has been locked`);
   }
 
   private async sendWarning(
@@ -210,5 +180,41 @@ export class DevToolsService {
   private async invalidateCache(userId: string): Promise<void> {
     await this.cache.del(`${CACHE_KEY_PREFIX}:count:${userId}`);
     await this.cache.delPattern(`${CACHE_KEY_PREFIX}:frequent:*`);
+  }
+
+  /**
+   * Reset warning points for a specific user
+   * Deletes all devtools logs for that user
+   */
+  async resetWarningPoints(userId: string): Promise<void> {
+    await this.prisma.devToolsLog.deleteMany({
+      where: { userId },
+    });
+
+    await this.invalidateCache(userId);
+    this.logger.log(`Warning points reset for user ${userId}`);
+  }
+
+  /**
+   * Reset all warning points older than 1 day
+   * Automatically cleans up old devtools detection logs
+   */
+  async resetOldWarningPoints(): Promise<number> {
+    const oneDayAgo = new Date();
+    oneDayAgo.setDate(oneDayAgo.getDate() - 1);
+
+    const result = await this.prisma.devToolsLog.deleteMany({
+      where: {
+        createdAt: { lt: oneDayAgo },
+      },
+    });
+
+    // Invalidate all caches
+    await this.cache.delPattern(`${CACHE_KEY_PREFIX}:*`);
+
+    this.logger.log(
+      `Reset ${result.count} old warning points (older than 1 day)`,
+    );
+    return result.count;
   }
 }

@@ -1,13 +1,19 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString, IsNotEmpty, MinLength } from 'class-validator';
+import { IsString, IsNotEmpty, MinLength, Matches } from 'class-validator';
+import { Transform } from 'class-transformer';
 
 export class RegisterDto {
   @ApiProperty({
     description: 'Username for registration',
     example: 'newuser',
   })
+  @Transform(({ value }) => value?.trim())
   @IsString()
   @IsNotEmpty()
+  @Matches(/^[a-zA-Z0-9_-]+$/, {
+    message:
+      'Username chỉ được chứa chữ cái, số, dấu gạch ngang (-) và dấu gạch dưới (_)',
+  })
   username: string;
 
   @ApiProperty({

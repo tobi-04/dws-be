@@ -12,6 +12,7 @@ import { R2Service } from '../r2/r2.service';
 import { CacheService } from '../cache/cache.service';
 import { EventsGateway } from '../events/events.gateway';
 import { NotificationService } from '../notification/notification.service';
+import { WatermarkService } from '../watermark/watermark.service';
 import { ProductStatus, Product, NotificationType } from '@prisma/client';
 import {
   CreateProductDto,
@@ -24,7 +25,9 @@ import { v4 as uuidv4 } from 'uuid';
 import * as XLSX from 'xlsx';
 
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const WATERMARK_CACHE_TTL = 30 * 60 * 1000; // 30 minutes for watermarked images
 const CACHE_KEY_PREFIX = 'products';
+const WATERMARK_CACHE_PREFIX = 'watermark';
 type Status = 'PRIVATE' | 'WHITELIST';
 
 // In-memory storage for import jobs (in production, use Redis)
@@ -49,6 +52,7 @@ export class ProductService {
     private prisma: PrismaService,
     private r2Service: R2Service,
     private cache: CacheService,
+    private watermarkService: WatermarkService,
     @Inject(forwardRef(() => EventsGateway))
     private eventsGateway: EventsGateway,
     @Inject(forwardRef(() => NotificationService))
@@ -67,13 +71,22 @@ export class ProductService {
       const fileExtension = file.originalname.split('.').pop();
       imageKey = `${folder}/${uuidv4()}.${fileExtension}`;
 
-      // Await upload to ensure availability
+      // Add logo watermark before upload
       try {
-        await this.r2Service.uploadFile(file, folder, imageKey);
-      } catch (err) {
+        const watermarkedBuffer = await this.watermarkService.addLogoWatermark(
+          file.buffer,
+        );
+        const watermarkedFile = {
+          ...file,
+          buffer: watermarkedBuffer,
+          size: watermarkedBuffer.length,
+        };
+        await this.r2Service.uploadFile(watermarkedFile, folder, imageKey);
+      } catch (err: unknown) {
+        const error = err as Error;
         this.logger.error(
-          `Upload failed for key ${imageKey}: ${err.message}`,
-          err.stack,
+          `Upload failed for key ${imageKey}: ${error.message}`,
+          error.stack,
         );
         throw new BadRequestException('Failed to upload image');
       }
@@ -86,13 +99,22 @@ export class ProductService {
         : 'jpg';
       imageKey = `${folder}/${uuidv4()}.${safeExtension}`;
 
-      // Await upload to ensure availability
+      // Add logo watermark before upload
       try {
-        await this.r2Service.uploadFromUrl(dto.imageUrl, folder, imageKey);
-      } catch (err) {
+        const watermarkedBuffer =
+          await this.watermarkService.addLogoWatermarkToUrl(dto.imageUrl);
+        const watermarkedFile = {
+          buffer: watermarkedBuffer,
+          mimetype: `image/${safeExtension}`,
+          originalname: `${uuidv4()}.${safeExtension}`,
+          size: watermarkedBuffer.length,
+        } as Express.Multer.File;
+        await this.r2Service.uploadFile(watermarkedFile, folder, imageKey);
+      } catch (err: unknown) {
+        const error = err as Error;
         this.logger.error(
-          `Upload from URL failed for key ${imageKey}: ${err.message}`,
-          err.stack,
+          `Upload from URL failed for key ${imageKey}: ${error.message}`,
+          error.stack,
         );
         throw new BadRequestException('Failed to upload image from URL');
       }
@@ -149,21 +171,29 @@ export class ProductService {
         const imageKey = `${folder}/${uuidv4()}.${safeExtension}`;
 
         try {
-          await this.r2Service.uploadFromUrl(
-            dto.imageUrl || '',
-            folder,
-            imageKey,
-          );
+          // Add logo watermark before upload
+          const watermarkedBuffer =
+            await this.watermarkService.addLogoWatermarkToUrl(
+              dto.imageUrl || '',
+            );
+          const watermarkedFile = {
+            buffer: watermarkedBuffer,
+            mimetype: `image/${safeExtension}`,
+            originalname: `${uuidv4()}.${safeExtension}`,
+            size: watermarkedBuffer.length,
+          } as Express.Multer.File;
+          await this.r2Service.uploadFile(watermarkedFile, folder, imageKey);
           return { success: true, dto, imageKey };
-        } catch (err) {
+        } catch (err: unknown) {
+          const error = err as Error;
           this.logger.error(
-            `Upload failed for "${dto.name}": ${err.message}`,
-            err.stack,
+            `Upload failed for "${dto.name}": ${error.message}`,
+            error.stack,
           );
           return {
             success: false,
             dto,
-            error: err.message || 'Upload failed',
+            error: error.message || 'Upload failed',
           };
         }
       });
@@ -180,13 +210,14 @@ export class ProductService {
           } else {
             failedUploads.push({
               dto: result.value.dto,
-              error: result.value.error,
+              error: result.value.error || 'Upload failed',
             });
           }
         } else {
+          const reason = result.reason as Error | undefined;
           failedUploads.push({
             dto: batch[0],
-            error: result.reason?.message || 'Unknown error',
+            error: reason?.message || 'Unknown error',
           });
         }
       });
@@ -265,11 +296,38 @@ export class ProductService {
       await this.r2Service.deleteFile(product.imageKey);
 
       if (file) {
-        const uploadResult = await this.r2Service.uploadFile(file, 'products');
+        // Add logo watermark before upload
+        const watermarkedBuffer = await this.watermarkService.addLogoWatermark(
+          file.buffer,
+        );
+        const watermarkedFile = {
+          ...file,
+          buffer: watermarkedBuffer,
+          size: watermarkedBuffer.length,
+        };
+        const uploadResult = await this.r2Service.uploadFile(
+          watermarkedFile,
+          'products',
+        );
         imageKey = uploadResult.key;
       } else if (dto.imageUrl) {
-        const uploadResult = await this.r2Service.uploadFromUrl(
-          dto.imageUrl,
+        // Add logo watermark before upload
+        const extension =
+          dto.imageUrl.split('.').pop()?.split('?')[0]?.substring(0, 4) ||
+          'jpg';
+        const safeExtension = ['jpg', 'png', 'gif', 'webp'].includes(extension)
+          ? extension
+          : 'jpg';
+        const watermarkedBuffer =
+          await this.watermarkService.addLogoWatermarkToUrl(dto.imageUrl);
+        const watermarkedFile = {
+          buffer: watermarkedBuffer,
+          mimetype: `image/${safeExtension}`,
+          originalname: `${uuidv4()}.${safeExtension}`,
+          size: watermarkedBuffer.length,
+        } as Express.Multer.File;
+        const uploadResult = await this.r2Service.uploadFile(
+          watermarkedFile,
           'products',
         );
         imageKey = uploadResult.key;
@@ -293,15 +351,25 @@ export class ProductService {
     return this.toResponseDto(updated, userId);
   }
 
+  /**
+   * OPTIMIZED findAll với batch processing và caching
+   * Performance: O(1) for cached, O(n) with parallel processing for uncached
+   */
   async findAll(
     page: number = 1,
     limit: number = 10,
     search?: string,
     status?: ProductStatus,
+    userId?: string,
+    username?: string,
   ): Promise<PaginatedProductsDto> {
-    const cacheKey = `${CACHE_KEY_PREFIX}:list:page:${page}:limit:${limit}:search:${search || ''}:status:${status || ''}`;
-    const cached = await this.cache.get<PaginatedProductsDto>(cacheKey);
+    // Cache key bao gồm userId cho watermark cache lookup
+    const cacheKey = username
+      ? `${CACHE_KEY_PREFIX}:list:${userId}:page:${page}:limit:${limit}:search:${search || ''}:status:${status || ''}`
+      : `${CACHE_KEY_PREFIX}:list:page:${page}:limit:${limit}:search:${search || ''}:status:${status || ''}`;
 
+    // Check cache first - O(1)
+    const cached = await this.cache.get<PaginatedProductsDto>(cacheKey);
     if (cached) {
       return cached;
     }
@@ -322,10 +390,13 @@ export class ProductService {
         orderBy: { createdAt: 'desc' },
       });
 
+      // Parallel processing với thumbnail mode
+      const items = await Promise.all(
+        products.map((p) => this.toResponseDto(p, userId || null, username)),
+      );
+
       const result: PaginatedProductsDto = {
-        items: await Promise.all(
-          products.map((p) => this.toResponseDto(p, null)),
-        ),
+        items,
         meta: {
           total: products.length,
           page: 0,
@@ -334,22 +405,35 @@ export class ProductService {
         },
       };
 
-      await this.cache.set(cacheKey, result, CACHE_TTL);
+      // Cache kết quả (bao gồm cả watermarked images)
+      await this.cache.set(
+        cacheKey,
+        result,
+        username ? WATERMARK_CACHE_TTL : CACHE_TTL,
+      );
       return result;
     }
 
-    const total = await this.prisma.product.count({ where });
-    const products = await this.prisma.product.findMany({
-      where,
-      skip: (page - 1) * limit,
-      take: limit,
-      orderBy: { createdAt: 'desc' },
-    });
+    // Parallel query for count and data
+    const [total, products] = await Promise.all([
+      this.prisma.product.count({ where }),
+      this.prisma.product.findMany({
+        where,
+        skip: (page - 1) * limit,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+      }),
+    ]);
+
+    // Parallel processing với thumbnail mode cho list view (resize 300px)
+    const items = await Promise.all(
+      products.map((p) =>
+        this.toResponseDto(p, userId || null, username, true),
+      ),
+    );
 
     const result: PaginatedProductsDto = {
-      items: await Promise.all(
-        products.map((p) => this.toResponseDto(p, null)),
-      ),
+      items,
       meta: {
         total,
         page,
@@ -358,14 +442,31 @@ export class ProductService {
       },
     };
 
-    await this.cache.set(cacheKey, result, CACHE_TTL);
+    // Cache kết quả
+    await this.cache.set(
+      cacheKey,
+      result,
+      username ? WATERMARK_CACHE_TTL : CACHE_TTL,
+    );
     return result;
   }
 
-  async findOne(id: string, userId: string): Promise<ProductResponseDto> {
-    const cacheKey = `${CACHE_KEY_PREFIX}:detail:${id}`;
-    const cached = await this.cache.get<ProductResponseDto>(cacheKey);
+  /**
+   * OPTIMIZED findOne với caching per user
+   * Performance: O(1) for cached
+   */
+  async findOne(
+    id: string,
+    userId: string,
+    username?: string,
+  ): Promise<ProductResponseDto> {
+    // Cache key bao gồm userId cho watermark cache
+    const cacheKey = username
+      ? `${CACHE_KEY_PREFIX}:detail:${userId}:${id}`
+      : `${CACHE_KEY_PREFIX}:detail:${id}`;
 
+    // Check cache first - O(1)
+    const cached = await this.cache.get<ProductResponseDto>(cacheKey);
     if (cached) {
       return cached;
     }
@@ -393,8 +494,15 @@ export class ProductService {
       }
     }
 
-    const result = await this.toResponseDto(product, userId);
-    await this.cache.set(cacheKey, result, CACHE_TTL);
+    // Giữ nguyên chất lượng ảnh gốc cho detail view (thumbnail=false)
+    const result = await this.toResponseDto(product, userId, username, false);
+
+    // Cache with appropriate TTL
+    await this.cache.set(
+      cacheKey,
+      result,
+      username ? WATERMARK_CACHE_TTL : CACHE_TTL,
+    );
     return result;
   }
 
@@ -429,6 +537,46 @@ export class ProductService {
     }
 
     await this.r2Service.deleteFile(product.imageKey);
+
+    // Delete related records first to avoid foreign key constraint errors
+    // Delete review likes for reviews on this product
+    await this.prisma.reviewLike.deleteMany({
+      where: {
+        review: {
+          productId: id,
+        },
+      },
+    });
+
+    // Delete review replies first (reviews with parentId)
+    await this.prisma.review.deleteMany({
+      where: {
+        productId: id,
+        parentId: { not: null },
+      },
+    });
+
+    // Then delete parent reviews
+    await this.prisma.review.deleteMany({
+      where: { productId: id },
+    });
+
+    // Delete product reactions
+    await this.prisma.productReaction.deleteMany({
+      where: { productId: id },
+    });
+
+    // Delete saved products
+    await this.prisma.savedProduct.deleteMany({
+      where: { productId: id },
+    });
+
+    // Delete product views
+    await this.prisma.productView.deleteMany({
+      where: { productId: id },
+    });
+
+    // Finally delete the product
     await this.prisma.product.delete({
       where: { id },
     });
@@ -458,11 +606,109 @@ export class ProductService {
       await this.r2Service.deleteFile(product.imageKey);
     }
 
+    // Delete related records first to avoid foreign key constraint errors
+    // Delete review likes for reviews on these products
+    await this.prisma.reviewLike.deleteMany({
+      where: {
+        review: {
+          productId: { in: ids },
+        },
+      },
+    });
+
+    // Delete review replies first (reviews with parentId)
+    await this.prisma.review.deleteMany({
+      where: {
+        productId: { in: ids },
+        parentId: { not: null },
+      },
+    });
+
+    // Then delete parent reviews
+    await this.prisma.review.deleteMany({
+      where: { productId: { in: ids } },
+    });
+
+    // Delete product reactions
+    await this.prisma.productReaction.deleteMany({
+      where: { productId: { in: ids } },
+    });
+
+    // Delete saved products
+    await this.prisma.savedProduct.deleteMany({
+      where: { productId: { in: ids } },
+    });
+
+    // Delete product views
+    await this.prisma.productView.deleteMany({
+      where: { productId: { in: ids } },
+    });
+
+    // Finally delete the products
     await this.prisma.product.deleteMany({
       where: { id: { in: ids } },
     });
 
     await this.invalidateCache();
+  }
+
+  async hardDeleteAll(): Promise<number> {
+    // Get all products to delete their images
+    const products = await this.prisma.product.findMany({
+      select: { id: true, imageKey: true },
+    });
+
+    const productIds = products.map((p) => p.id);
+
+    // Delete images from R2
+    for (const product of products) {
+      try {
+        await this.r2Service.deleteFile(product.imageKey);
+      } catch {
+        this.logger.warn(`Failed to delete image ${product.imageKey}`);
+      }
+    }
+
+    // Delete all related records
+    await this.prisma.reviewLike.deleteMany({
+      where: {
+        review: {
+          productId: { in: productIds },
+        },
+      },
+    });
+
+    // Delete review replies first
+    await this.prisma.review.deleteMany({
+      where: {
+        productId: { in: productIds },
+        parentId: { not: null },
+      },
+    });
+
+    // Delete parent reviews
+    await this.prisma.review.deleteMany({
+      where: { productId: { in: productIds } },
+    });
+
+    await this.prisma.productReaction.deleteMany({
+      where: { productId: { in: productIds } },
+    });
+
+    await this.prisma.savedProduct.deleteMany({
+      where: { productId: { in: productIds } },
+    });
+
+    await this.prisma.productView.deleteMany({
+      where: { productId: { in: productIds } },
+    });
+
+    // Delete all products
+    const result = await this.prisma.product.deleteMany({});
+
+    await this.invalidateCache();
+
+    return result.count;
   }
 
   async findDeleted(
@@ -529,11 +775,47 @@ export class ProductService {
     await this.invalidateCache();
   }
 
+  /**
+   * Convert Product to ResponseDto với caching watermark
+   * Cache key: watermark:{userId}:{productId}:{thumbnail}
+   * @param thumbnail - true: resize nhỏ cho list view, false: giữ nguyên chất lượng
+   */
   private async toResponseDto(
     product: Product,
     userId: string | null,
+    username?: string,
+    thumbnail: boolean = true,
   ): Promise<ProductResponseDto> {
-    const imageUrl = await this.getImageUrl(product, userId);
+    let imageUrl: string;
+
+    if (username) {
+      // Check cache first - O(1) lookup (separate cache for thumbnail vs full)
+      const cacheKey = `${WATERMARK_CACHE_PREFIX}:${userId}:${product.id}:${thumbnail ? 'thumb' : 'full'}`;
+      const cached = await this.cache.get<string>(cacheKey);
+
+      if (cached) {
+        imageUrl = cached;
+      } else {
+        // Trả về base64 với watermark username
+        try {
+          const originalUrl = await this.getImageUrl(product, userId);
+          imageUrl = await this.watermarkService.getWatermarkedImageBase64(
+            originalUrl,
+            username,
+            thumbnail,
+          );
+          // Cache watermarked image for 30 minutes
+          await this.cache.set(cacheKey, imageUrl, WATERMARK_CACHE_TTL);
+        } catch {
+          this.logger.error(
+            `Failed to create watermark for product ${product.id}`,
+          );
+          imageUrl = await this.getImageUrl(product, userId);
+        }
+      }
+    } else {
+      imageUrl = await this.getImageUrl(product, userId);
+    }
 
     return {
       id: product.id,
@@ -547,6 +829,72 @@ export class ProductService {
       createdAt: product.createdAt,
       updatedAt: product.updatedAt,
     };
+  }
+
+  /**
+   * Lấy ảnh có watermark username dạng buffer để stream
+   */
+  async getWatermarkedImageBuffer(
+    productId: string,
+    userId: string,
+    username: string,
+  ): Promise<{ buffer: Buffer; mimeType: string }> {
+    const product = await this.prisma.product.findUnique({
+      where: { id: productId },
+    });
+
+    if (!product) {
+      throw new NotFoundException('Product not found');
+    }
+
+    if (product.isDeleted) {
+      throw new NotFoundException('Product not found');
+    }
+
+    // Check access
+    if (product.status === ProductStatus.WHITELIST) {
+      const user = await this.prisma.user.findUnique({ where: { id: userId } });
+      const isAdmin = user?.role === 'ADMIN';
+
+      if (!isAdmin && !product.whitelistUserIds.includes(userId)) {
+        throw new ForbiddenException(
+          'You are not authorized to view this product',
+        );
+      }
+    }
+
+    // Lấy URL ảnh gốc
+    const originalUrl = await this.getImageUrl(product, userId);
+
+    // Thêm watermark và trả về buffer
+    const watermarkedBuffer = await this.watermarkService.addUsernameWatermark(
+      await this.fetchImageBuffer(originalUrl),
+      username,
+    );
+
+    // Detect mime type
+    const ext = product.imageKey.split('.').pop()?.toLowerCase() || 'jpg';
+    const mimeTypes: Record<string, string> = {
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      png: 'image/png',
+      gif: 'image/gif',
+      webp: 'image/webp',
+    };
+
+    return {
+      buffer: watermarkedBuffer,
+      mimeType: mimeTypes[ext] || 'image/jpeg',
+    };
+  }
+
+  private async fetchImageBuffer(url: string): Promise<Buffer> {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch image: ${response.statusText}`);
+    }
+    const arrayBuffer = await response.arrayBuffer();
+    return Buffer.from(arrayBuffer);
   }
 
   private toResponseDtoWithoutUrl(product: Product): ProductResponseDto {

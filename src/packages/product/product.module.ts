@@ -6,12 +6,14 @@ import { R2Module } from '../r2/r2.module';
 import { EventsModule } from '../events/events.module';
 import { NotificationModule } from '../notification/notification.module';
 import { CacheModule } from '../cache/cache.module';
+import { WatermarkModule } from '../watermark/watermark.module';
 
 @Module({
   imports: [
     PrismaModule,
     R2Module,
     CacheModule,
+    WatermarkModule,
     forwardRef(() => EventsModule),
     forwardRef(() => NotificationModule),
   ],

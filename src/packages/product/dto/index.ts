@@ -127,7 +127,10 @@ export class ProductResponseDto {
   @ApiProperty()
   name: string;
 
-  @ApiProperty({ description: 'Image URL (public or signed based on status)' })
+  @ApiProperty({
+    description:
+      'Image URL - points to /products/:id/image endpoint with username watermark',
+  })
   imageUrl: string;
 
   @ApiProperty({ enum: ProductStatus })
