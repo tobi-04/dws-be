@@ -23,8 +23,8 @@ async function bootstrap() {
 
   // Enable CORS
   app.enableCors({
-    origin: appConfig.cors.origin,
-    credentials: appConfig.cors.credentials,
+    origin: '*',
+    credentials: true,
   });
 
   // Global API prefix
